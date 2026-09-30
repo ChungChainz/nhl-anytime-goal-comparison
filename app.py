@@ -413,123 +413,199 @@ today_events.sort(key=lambda event: (event["commence_time"], event["id"]))
 event_lookup = {event["id"]: event for event in today_events}
 event_ids = list(event_lookup.keys())
 
+ALL_GAMES = "__all_games__"
+event_options = [ALL_GAMES] + event_ids
+
 remembered_event_id = st.session_state.get("selected_event_id")
 
 selected_event_id = st.selectbox(
     "Today's NHL Games",
-    options=event_ids,
+    options=event_options,
     index=(
-        event_ids.index(remembered_event_id)
-        if remembered_event_id in event_ids
-        else 0
+        event_options.index(remembered_event_id)
+        if remembered_event_id in event_options
+        else 1
     ),
     key="event_selector",
     format_func=lambda event_id: (
-        f"{event_lookup[event_id]['away_team']} @ "
-        f"{event_lookup[event_id]['home_team']} — "
-        f"{datetime.fromisoformat(event_lookup[event_id]['commence_time'].replace('Z', '+00:00')).astimezone(PACIFIC_TIME).strftime('%I:%M %p PT')}"
+        "All Games"
+        if event_id == ALL_GAMES
+        else (
+            f"{event_lookup[event_id]['away_team']} @ "
+            f"{event_lookup[event_id]['home_team']} — "
+            f"{datetime.fromisoformat(event_lookup[event_id]['commence_time'].replace('Z', '+00:00')).astimezone(PACIFIC_TIME).strftime('%I:%M %p PT')}"
+        )
     ),
 )
 
 st.session_state["selected_event_id"] = selected_event_id
 
-try:
-    odds_payload, odds_headers = get_anytime_goal_odds(
-        api_key,
-        selected_event_id,
+player_search = st.text_input(
+    "Search player",
+    placeholder="Type a player name...",
+).strip()
+
+selected_event_ids = (
+    event_ids
+    if selected_event_id == ALL_GAMES
+    else [selected_event_id]
+)
+
+
+def display_game(event_id: str, search_text: str) -> bool:
+    try:
+        odds_payload, odds_headers = get_anytime_goal_odds(
+            api_key,
+            event_id,
+        )
+
+        home_team = odds_payload["home_team"]
+        away_team = odds_payload["away_team"]
+        player_team_map = build_player_team_map(home_team, away_team)
+
+    except KeyError:
+        st.error("Could not find an NHL team code for this matchup.")
+        return False
+
+    except requests.exceptions.RequestException as error:
+        st.error(f"Could not load the odds or NHL roster data: {error}")
+        return False
+
+    raw_odds = normalize_odds(odds_payload, player_team_map)
+
+    if raw_odds.empty:
+        st.warning(
+            f"No DraftKings or FanDuel Anytime Goal Scorer odds were returned "
+            f"for {away_team} @ {home_team}."
+        )
+        return False
+
+    matched_odds = raw_odds.loc[
+        raw_odds["Team"] != "Unmatched"
+    ].copy()
+
+    if search_text:
+        normalized_search = normalize_name(search_text)
+
+        matched_odds = matched_odds.loc[
+            matched_odds["Player"]
+            .map(normalize_name)
+            .str.contains(normalized_search, case=False, na=False, regex=False)
+        ].copy()
+
+        # In All Games mode, skip games where the searched player is absent.
+        if matched_odds.empty:
+            return False
+
+    st.subheader(f"{away_team} @ {home_team}")
+    st.caption(
+        f"Retrieved at {datetime.now(PACIFIC_TIME).strftime('%I:%M:%S %p PT')}"
     )
 
-    home_team = odds_payload["home_team"]
-    away_team = odds_payload["away_team"]
-    player_team_map = build_player_team_map(home_team, away_team)
-
-except KeyError:
-    st.error("Could not find an NHL team code for this matchup.")
-    st.stop()
-
-except requests.exceptions.RequestException as error:
-    st.error(f"Could not load the odds or NHL roster data: {error}")
-    st.stop()
-
-raw_odds = normalize_odds(odds_payload, player_team_map)
-
-st.subheader(f"{away_team} @ {home_team}")
-st.caption(
-    f"Retrieved at {datetime.now(PACIFIC_TIME).strftime('%I:%M:%S %p PT')}"
-)
-
-if raw_odds.empty:
-    st.warning(
-        "No DraftKings or FanDuel Anytime Goal Scorer odds were returned."
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Players", matched_odds["Player"].nunique())
+    col2.metric(
+        "DraftKings Prices",
+        matched_odds.loc[
+            matched_odds["Book Key"] == "draftkings",
+            "Player",
+        ].nunique(),
     )
-    st.stop()
-
-col1, col2, col3 = st.columns(3)
-col1.metric("Players", raw_odds["Player"].nunique())
-col2.metric(
-    "DraftKings Prices",
-    raw_odds.loc[raw_odds["Book Key"] == "draftkings", "Player"].nunique(),
-)
-col3.metric(
-    "FanDuel Prices",
-    raw_odds.loc[raw_odds["Book Key"] == "fanduel", "Player"].nunique(),
-)
-
-matched_odds = raw_odds.loc[raw_odds["Team"] != "Unmatched"]
-
-st.markdown("#### TEAM SUMMARY")
-
-team_summary = build_team_summary(
-    matched_odds,
-    home_team,
-    away_team,
-)
-
-styled_summary = (
-    team_summary.style
-    .map(sign_color, subset=["Diff", "Diff / Player"])
-    .format(
-        {
-            "DK Total": "{:.2f}%",
-            "FD Total": "{:.2f}%",
-            "Diff": "{:+.2f}%",
-            "DK Avg": "{:.2f}%",
-            "FD Avg": "{:.2f}%",
-            "Diff / Player": "{:+.2f}%",
-        }
+    col3.metric(
+        "FanDuel Prices",
+        matched_odds.loc[
+            matched_odds["Book Key"] == "fanduel",
+            "Player",
+        ].nunique(),
     )
-)
 
-st.dataframe(
-    styled_summary,
-    use_container_width=True,
-    hide_index=True,
-)
+    # Keep the normal team-level summary when not searching.
+    if not search_text:
+        st.markdown("#### TEAM SUMMARY")
 
-st.caption(
-    "Positive differences are green; negative differences are red. "
-    "A positive FD - DK difference means FanDuel has the better listed price."
-)
+        team_summary = build_team_summary(
+            matched_odds,
+            home_team,
+            away_team,
+        )
 
-display_player_section(
-    home_team,
-    "Home",
-    matched_odds.loc[matched_odds["Team"] == home_team],
-)
+        styled_summary = (
+            team_summary.style
+            .map(sign_color, subset=["Diff", "Diff / Player"])
+            .format(
+                {
+                    "DK Total": "{:.2f}%",
+                    "FD Total": "{:.2f}%",
+                    "Diff": "{:+.2f}%",
+                    "DK Avg": "{:.2f}%",
+                    "FD Avg": "{:.2f}%",
+                    "Diff / Player": "{:+.2f}%",
+                }
+            )
+        )
 
-display_player_section(
-    away_team,
-    "Away",
-    matched_odds.loc[matched_odds["Team"] == away_team],
-)
+        st.dataframe(
+            styled_summary,
+            use_container_width=True,
+            hide_index=True,
+        )
 
-unmatched_players = raw_odds.loc[
-    raw_odds["Team"] == "Unmatched",
-    "Player",
-].unique()
+        st.caption(
+            "Positive differences are green; negative differences are red. "
+            "A positive FD - DK difference means FanDuel has the better listed price."
+        )
+    else:
+        st.caption(f"Showing results matching: {search_text}")
 
-if len(unmatched_players) > 0:
-    st.warning(
-        f"{len(unmatched_players)} player(s) could not be roster-matched: "
-        f"{', '.join(unmatched_players)}"
+    home_odds = matched_odds.loc[
+        matched_odds["Team"] == home_team
+    ]
+    away_odds = matched_odds.loc[
+        matched_odds["Team"] == away_team
+    ]
+
+    if not home_odds.empty:
+        display_player_section(
+            home_team,
+            "Home",
+            home_odds,
+        )
+
+    if not away_odds.empty:
+        display_player_section(
+            away_team,
+            "Away",
+            away_odds,
+        )
+
+    if not search_text:
+        unmatched_players = raw_odds.loc[
+            raw_odds["Team"] == "Unmatched",
+            "Player",
+        ].unique()
+
+        if len(unmatched_players) > 0:
+            st.warning(
+                f"{len(unmatched_players)} player(s) could not be roster-matched: "
+                f"{', '.join(unmatched_players)}"
+            )
+
+    return True
+
+
+games_displayed = 0
+
+for event_id in selected_event_ids:
+    if games_displayed > 0:
+        st.divider()
+
+    game_was_displayed = display_game(event_id, player_search)
+
+    if game_was_displayed:
+        games_displayed += 1
+
+if player_search and games_displayed == 0:
+    st.info(
+        f'No matched anytime-goal prices found for "{player_search}" '
+        "on today’s slate."
     )
