@@ -61,9 +61,17 @@ def normalize_name(name: str) -> str:
     return PLAYER_NAME_ALIASES.get(normalized, normalized)
 
 
-def event_is_today(event: dict) -> bool:
+def event_start_time(event: dict) -> datetime:
     game_time = datetime.fromisoformat(event["commence_time"].replace("Z", "+00:00"))
-    return game_time.astimezone(PACIFIC_TIME).date() == datetime.now(PACIFIC_TIME).date()
+    return game_time.astimezone(PACIFIC_TIME)
+
+
+def event_is_on_date(event: dict, date) -> bool:
+    return event_start_time(event).date() == date
+
+
+def event_is_pregame(event: dict) -> bool:
+    return event_start_time(event) > datetime.now(PACIFIC_TIME)
 
 
 def sign_color(value):
@@ -451,48 +459,41 @@ def automatic_refresh():
 
 automatic_refresh()
 
-try:
-    all_events = get_nhl_events(api_key)
-except requests.exceptions.RequestException as error:
-    st.error(f"Could not load NHL events: {error}")
-    st.stop()
 
-today_events = [event for event in all_events if event_is_today(event)]
-if not today_events:
-    st.info("There are no NHL games on today’s slate.")
-    st.stop()
-
-today_events.sort(key=lambda event: (event["commence_time"], event["id"]))
-event_lookup = {event["id"]: event for event in today_events}
-event_ids = list(event_lookup.keys())
 ALL_GAMES = "__all_games__"
-event_options = [ALL_GAMES] + event_ids
-remembered_event_id = st.session_state.get("selected_event_id")
+PRICE_GAP_LIMIT = 20
+PRICE_GAP_COLUMNS = [
+    "Player", "Team", "Game", "DK Odds", "FD Odds",
+    "DK Implied %", "FD Implied %", "Difference (FD - DK)",
+]
 
-selected_event_id = st.selectbox(
-    "Today's NHL Games",
-    options=event_options,
-    index=event_options.index(remembered_event_id) if remembered_event_id in event_options else 1,
-    key="event_selector",
-    format_func=lambda event_id: (
-        "All Games" if event_id == ALL_GAMES else (
-            f"{event_lookup[event_id]['away_team']} @ {event_lookup[event_id]['home_team']} — "
-            f"{datetime.fromisoformat(event_lookup[event_id]['commence_time'].replace('Z', '+00:00')).astimezone(PACIFIC_TIME).strftime('%I:%M %p PT')}"
-        )
-    ),
-)
-st.session_state["selected_event_id"] = selected_event_id
 
-player_search = st.text_input("Search player", placeholder="Type a player name...").strip()
-selected_event_ids = event_ids if selected_event_id == ALL_GAMES else [selected_event_id]
+def format_event_label(event: dict) -> str:
+    return (
+        f"{event['away_team']} @ {event['home_team']} — "
+        f"{event_start_time(event).strftime('%I:%M %p PT')}"
+    )
+
+
+def load_game_odds(event_id: str):
+    odds_payload, _ = get_anytime_goal_odds(api_key, event_id)
+    home_team = odds_payload["home_team"]
+    away_team = odds_payload["away_team"]
+    player_team_map = build_player_team_map(home_team, away_team)
+
+    raw_odds = normalize_odds(odds_payload, player_team_map)
+    if raw_odds.empty:
+        return home_team, away_team, raw_odds, pd.DataFrame()
+
+    team_totals = extract_team_totals(odds_payload, home_team, away_team)
+    team_goal_rates = build_team_total_implied_goals(team_totals)
+    raw_odds = add_player_implied_goals(raw_odds, team_goal_rates)
+    return home_team, away_team, raw_odds, team_goal_rates
 
 
 def display_game(event_id: str, search_text: str) -> bool:
     try:
-        odds_payload, _ = get_anytime_goal_odds(api_key, event_id)
-        home_team = odds_payload["home_team"]
-        away_team = odds_payload["away_team"]
-        player_team_map = build_player_team_map(home_team, away_team)
+        home_team, away_team, raw_odds, team_goal_rates = load_game_odds(event_id)
     except KeyError:
         st.error("Could not find an NHL team code for this matchup.")
         return False
@@ -500,14 +501,10 @@ def display_game(event_id: str, search_text: str) -> bool:
         st.error(f"Could not load the odds or NHL roster data: {error}")
         return False
 
-    raw_odds = normalize_odds(odds_payload, player_team_map)
     if raw_odds.empty:
         st.warning(f"No DraftKings or FanDuel Anytime Goal Scorer odds were returned for {away_team} @ {home_team}.")
         return False
 
-    team_totals = extract_team_totals(odds_payload, home_team, away_team)
-    team_goal_rates = build_team_total_implied_goals(team_totals)
-    raw_odds = add_player_implied_goals(raw_odds, team_goal_rates)
     matched_odds = raw_odds.loc[raw_odds["Team"] != "Unmatched"].copy()
 
     if search_text:
@@ -564,12 +561,160 @@ def display_game(event_id: str, search_text: str) -> bool:
     return True
 
 
-games_displayed = 0
-for event_id in selected_event_ids:
-    if games_displayed > 0:
-        st.divider()
-    if display_game(event_id, player_search):
-        games_displayed += 1
+def render_slate(events: list, selector_label: str, key_prefix: str, slate_name: str):
+    if not events:
+        st.info(f"There are no upcoming NHL games on {slate_name}.")
+        return
 
-if player_search and games_displayed == 0:
-    st.info(f'No matched anytime-goal prices found for "{player_search}" on today’s slate.')
+    event_lookup = {event["id"]: event for event in events}
+    event_ids = list(event_lookup.keys())
+    event_options = [ALL_GAMES] + event_ids
+    remembered_key = f"{key_prefix}_selected_event_id"
+    remembered_event_id = st.session_state.get(remembered_key)
+
+    selected_event_id = st.selectbox(
+        selector_label,
+        options=event_options,
+        index=event_options.index(remembered_event_id) if remembered_event_id in event_options else 1,
+        key=f"{key_prefix}_event_selector",
+        format_func=lambda event_id: (
+            "All Games" if event_id == ALL_GAMES else format_event_label(event_lookup[event_id])
+        ),
+    )
+    st.session_state[remembered_key] = selected_event_id
+
+    search_key = f"{key_prefix}_player_search"
+    player_search = st.text_input(
+        "Search player",
+        value=st.session_state.get(f"{search_key}_value", ""),
+        placeholder="Type a player name...",
+        key=search_key,
+    ).strip()
+    st.session_state[f"{search_key}_value"] = player_search
+    selected_event_ids = event_ids if selected_event_id == ALL_GAMES else [selected_event_id]
+
+    games_displayed = 0
+    for event_id in selected_event_ids:
+        if games_displayed > 0:
+            st.divider()
+        if display_game(event_id, player_search):
+            games_displayed += 1
+
+    if player_search and games_displayed == 0:
+        st.info(f'No matched anytime-goal prices found for "{player_search}" on {slate_name}.')
+
+
+def build_price_gaps(events: list):
+    frames = []
+    failed_games = []
+    for event in events:
+        try:
+            home_team, away_team, raw_odds, _ = load_game_odds(event["id"])
+        except (KeyError, requests.exceptions.RequestException):
+            failed_games.append(f"{event['away_team']} @ {event['home_team']}")
+            continue
+        if raw_odds.empty:
+            continue
+
+        comparison = build_player_comparison(raw_odds)
+        player_teams = raw_odds.drop_duplicates("Player").set_index("Player")["Team"]
+        comparison["Team"] = comparison["Player"].map(player_teams).map(lambda team: TEAM_CODES.get(team, team))
+        comparison["Game"] = f"{TEAM_CODES.get(away_team, away_team)} @ {TEAM_CODES.get(home_team, home_team)}"
+        frames.append(comparison)
+
+    if not frames:
+        return pd.DataFrame(columns=PRICE_GAP_COLUMNS), failed_games
+
+    # Only players priced at both books can have a DK-vs-FD gap.
+    gaps = pd.concat(frames, ignore_index=True).dropna(subset=["DK Implied %", "FD Implied %"])
+    return gaps[PRICE_GAP_COLUMNS], failed_games
+
+
+def display_price_gap_table(gaps: pd.DataFrame):
+    styled_gaps = (
+        gaps.style
+        .map(sign_color, subset=["Difference (FD - DK)"])
+        .format(
+            {
+                "DK Implied %": "{:.2f}%",
+                "FD Implied %": "{:.2f}%",
+                "Difference (FD - DK)": "{:+.2f}%",
+            }
+        )
+    )
+    st.dataframe(styled_gaps, use_container_width=True, hide_index=True)
+
+
+def render_price_gaps(slates: dict):
+    slate_name = st.radio("Slate", options=list(slates.keys()), horizontal=True, key="price_gap_slate")
+    events = slates[slate_name]
+    if not events:
+        st.info(f"There are no upcoming NHL games on {slate_name.lower()}’s slate.")
+        return
+
+    gaps, failed_games = build_price_gaps(events)
+    if failed_games:
+        st.warning(f"Could not load odds for: {', '.join(failed_games)}")
+    if gaps.empty:
+        st.info("No players currently have both a DraftKings and a FanDuel anytime-goal price.")
+        return
+
+    st.caption(
+        f"{len(events)} game(s) • {len(gaps)} players priced at both books • "
+        f"Retrieved at {datetime.now(PACIFIC_TIME).strftime('%I:%M:%S %p PT')}"
+    )
+
+    # FD - DK > 0 means FanDuel implies a higher probability, i.e. DK is the longer price.
+    dk_longer = gaps.loc[gaps["Difference (FD - DK)"] > 0].nlargest(PRICE_GAP_LIMIT, "Difference (FD - DK)")
+    dk_shorter = gaps.loc[gaps["Difference (FD - DK)"] < 0].nsmallest(PRICE_GAP_LIMIT, "Difference (FD - DK)")
+
+    st.markdown(f"#### DK Priced Longer Than FD (Top {PRICE_GAP_LIMIT})")
+    if dk_longer.empty:
+        st.info("No players where DraftKings is longer than FanDuel.")
+    else:
+        display_price_gap_table(dk_longer)
+
+    st.markdown(f"#### DK Priced Shorter Than FD (Top {PRICE_GAP_LIMIT})")
+    if dk_shorter.empty:
+        st.info("No players where DraftKings is shorter than FanDuel.")
+    else:
+        display_price_gap_table(dk_shorter)
+
+
+try:
+    all_events = get_nhl_events(api_key)
+except requests.exceptions.RequestException as error:
+    st.error(f"Could not load NHL events: {error}")
+    st.stop()
+
+today = datetime.now(PACIFIC_TIME).date()
+tomorrow = today + timedelta(days=1)
+all_events = sorted(all_events, key=lambda event: (event["commence_time"], event["id"]))
+# Games drop off Today once their listed start time passes, so only pregame matchups remain.
+today_events = [event for event in all_events if event_is_on_date(event, today) and event_is_pregame(event)]
+tomorrow_events = [event for event in all_events if event_is_on_date(event, tomorrow)]
+
+# on_change="rerun" makes tabs lazy, so only the open tab spends Odds API requests.
+today_tab, price_gaps_tab, overnight_tab = st.tabs(
+    ["Today", "Price Gaps", "Overnight"],
+    key="main_tabs",
+    on_change="rerun",
+)
+
+if today_tab.open:
+    with today_tab:
+        render_slate(today_events, "Today's NHL Games", "today", "today’s slate")
+
+if price_gaps_tab.open:
+    with price_gaps_tab:
+        render_price_gaps({"Today": today_events, "Tomorrow": tomorrow_events})
+
+if overnight_tab.open:
+    with overnight_tab:
+        st.markdown(f"### Tomorrow's Slate — {tomorrow.strftime('%a %m/%d')}")
+        render_slate(
+            tomorrow_events,
+            f"Tomorrow's NHL Games ({tomorrow.strftime('%m/%d')})",
+            "overnight",
+            "tomorrow’s slate",
+        )
