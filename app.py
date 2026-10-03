@@ -99,7 +99,7 @@ def get_nhl_events(api_key: str):
     return response.json()
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_anytime_goal_odds(api_key: str, event_id: str):
     response = requests.get(
         f"{API_BASE_URL}/sports/icehockey_nhl/events/{event_id}/odds",
@@ -453,10 +453,10 @@ if "last_auto_refresh" not in st.session_state:
     st.session_state.last_auto_refresh = datetime.now(PACIFIC_TIME)
 
 
-@st.fragment(run_every=60)
+@st.fragment(run_every=300)
 def automatic_refresh():
     elapsed = datetime.now(PACIFIC_TIME) - st.session_state.last_auto_refresh
-    if elapsed >= timedelta(seconds=60):
+    if elapsed >= timedelta(seconds=300):
         st.session_state.last_auto_refresh = datetime.now(PACIFIC_TIME)
         st.rerun()
 
