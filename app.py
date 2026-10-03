@@ -107,7 +107,7 @@ def get_anytime_goal_odds(api_key: str, event_id: str):
             "apiKey": api_key,
             "regions": "us",
             "bookmakers": "draftkings,fanduel",
-            "markets": "player_goal_scorer_anytime,team_totals,alternate_team_totals",
+            "markets": "player_goal_scorer_anytime,alternate_team_totals",
             "oddsFormat": "american",
         },
         timeout=20,
@@ -264,48 +264,125 @@ def implied_goals_from_team_total(line: float, fair_over_probability: float):
     return (low + high) / 2
 
 
+def interpolate_missing_side_probability(
+    market_rows: pd.DataFrame,
+    target_line: float,
+    missing_side: str,
+) -> float:
+    """Estimate a missing Over/Under probability from adjacent offered lines."""
+    side_rows = (
+        market_rows.loc[
+            market_rows["Side"] == missing_side,
+            ["Line", "Raw Probability"],
+        ]
+        .drop_duplicates(subset=["Line"])
+        .sort_values("Line")
+    )
+
+    lower = side_rows.loc[side_rows["Line"] < target_line].tail(1)
+    upper = side_rows.loc[side_rows["Line"] > target_line].head(1)
+
+    # Do not extrapolate: only fill a gap with a line on each side.
+    if lower.empty or upper.empty:
+        return float("nan")
+
+    lower_line = float(lower["Line"].iloc[0])
+    lower_probability = float(lower["Raw Probability"].iloc[0])
+    upper_line = float(upper["Line"].iloc[0])
+    upper_probability = float(upper["Raw Probability"].iloc[0])
+
+    weight = (target_line - lower_line) / (upper_line - lower_line)
+
+    return lower_probability + weight * (
+        upper_probability - lower_probability
+    )
+
+
 def build_team_total_implied_goals(team_totals: pd.DataFrame) -> pd.DataFrame:
-    columns = ["Team", "Book Key", "Team Total", "Fair Over %", "Market Implied Goals"]
+    columns = [
+        "Team",
+        "Book Key",
+        "Team Total",
+        "Fair Over %",
+        "Market Implied Goals",
+    ]
 
     if team_totals.empty:
         return pd.DataFrame(columns=columns)
 
     rows = []
 
-    for (team, book_key, market_key, line), group in team_totals.groupby(
-        ["Team", "Book Key", "Market Key", "Line"]
+    # Keep each sportsbook and market separate while completing missing sides.
+    for (team, book_key, market_key), market_rows in team_totals.groupby(
+        ["Team", "Book Key", "Market Key"]
     ):
-        over = group.loc[group["Side"] == "Over", "Raw Probability"]
-        under = group.loc[group["Side"] == "Under", "Raw Probability"]
+        for line, line_rows in market_rows.groupby("Line"):
+            over = line_rows.loc[
+                line_rows["Side"] == "Over", "Raw Probability"
+            ]
+            under = line_rows.loc[
+                line_rows["Side"] == "Under", "Raw Probability"
+            ]
 
-        if over.empty or under.empty:
-            continue
+            over_probability = (
+                float(over.iloc[0]) if not over.empty else float("nan")
+            )
+            under_probability = (
+                float(under.iloc[0]) if not under.empty else float("nan")
+            )
 
-        fair_over_probability = over.iloc[0] / (over.iloc[0] + under.iloc[0])
+            # If one side is missing, estimate it from the nearest same-side
+            # total below and above this line.
+            if pd.isna(over_probability):
+                over_probability = interpolate_missing_side_probability(
+                    market_rows,
+                    float(line),
+                    "Over",
+                )
 
-        rows.append(
-            {
-                "Team": team,
-                "Book Key": book_key,
-                "Market Key": market_key,
-                "Team Total": line,
-                "Fair Over %": fair_over_probability * 100,
-                "Market Implied Goals": implied_goals_from_team_total(
-                    line,
-                    fair_over_probability,
-                ),
-            }
-        )
+            if pd.isna(under_probability):
+                under_probability = interpolate_missing_side_probability(
+                    market_rows,
+                    float(line),
+                    "Under",
+                )
+
+            # Skip a line if it still cannot be completed safely.
+            if pd.isna(over_probability) or pd.isna(under_probability):
+                continue
+
+            fair_over_probability = over_probability / (
+                over_probability + under_probability
+            )
+
+            rows.append(
+                {
+                    "Team": team,
+                    "Book Key": book_key,
+                    "Market Key": market_key,
+                    "Team Total": float(line),
+                    "Fair Over %": fair_over_probability * 100,
+                    "Market Implied Goals": implied_goals_from_team_total(
+                        float(line),
+                        fair_over_probability,
+                    ),
+                }
+            )
 
     if not rows:
         return pd.DataFrame(columns=columns)
 
     rates = pd.DataFrame(rows)
 
-    # Prefer a featured team total if available.
-    # Otherwise, select the alternate line closest to a true 50/50 no-vig price.
-    rates["source_priority"] = rates["Market Key"].ne("team_totals").astype(int)
-    rates["balance_distance"] = (rates["Fair Over %"] / 100 - 0.50).abs()
+    # Prefer alternate team totals: they are the detailed board that gives us
+    # the closest balanced line, with team_totals as a fallback.
+    rates["source_priority"] = rates["Market Key"].ne(
+        "alternate_team_totals"
+    ).astype(int)
+
+    rates["balance_distance"] = (
+        rates["Fair Over %"] / 100 - 0.5
+    ).abs()
 
     rates = (
         rates.sort_values(
@@ -314,9 +391,7 @@ def build_team_total_implied_goals(team_totals: pd.DataFrame) -> pd.DataFrame:
         .drop_duplicates(["Team", "Book Key"], keep="first")
         .reset_index(drop=True)
     )
-
     return rates[columns]
-
 
 def add_player_implied_goals(raw_odds: pd.DataFrame, team_goal_rates: pd.DataFrame) -> pd.DataFrame:
     odds = raw_odds.copy()
@@ -407,7 +482,10 @@ def build_team_summary(raw_odds: pd.DataFrame, team_goal_rates: pd.DataFrame, ho
             team_xg = rate_data.get("Market Implied Goals", float("nan"))
             scorer_xg = book_odds["Scorer Derived xG"].sum() if not book_odds.empty else float("nan")
             row[f"{prefix} Players"] = book_odds["Player"].nunique()
-            row[f"{prefix} TT"] = rate_data.get("Team Total", float("nan"))
+            row[f"{prefix} TT"] = rate_data.get(
+                "Display Team Total",
+                rate_data.get("Team Total", float("nan")),
+            )
             row[f"{prefix} Team xG"] = team_xg
             row[f"{prefix} Scorer xG"] = scorer_xg
             row[f"{prefix} Gap"] = scorer_xg - team_xg if pd.notna(team_xg) else float("nan")
