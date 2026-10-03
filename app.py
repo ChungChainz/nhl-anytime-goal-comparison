@@ -579,7 +579,7 @@ def render_slate(events: list, selector_label: str, key_prefix: str, slate_name:
     selected_event_id = st.selectbox(
         selector_label,
         options=event_options,
-        index=event_options.index(remembered_event_id) if remembered_event_id in event_options else 1,
+        index=event_options.index(remembered_event_id) if remembered_event_id in event_options else 0,
         key=f"{key_prefix}_event_selector",
         format_func=lambda event_id: (
             "All Games" if event_id == ALL_GAMES else format_event_label(event_lookup[event_id])
@@ -607,6 +607,26 @@ def render_slate(events: list, selector_label: str, key_prefix: str, slate_name:
     if player_search and games_displayed == 0:
         st.info(f'No matched anytime-goal prices found for "{player_search}" on {slate_name}.')
 
+def render_overnight_slate(events: list, selector_label: str):
+    if not events:
+        st.info("There are no upcoming NHL games on tomorrow’s slate.")
+        return
+
+    event_lookup = {event["id"]: event for event in events}
+    event_ids = list(event_lookup.keys())
+
+    selected_event_id = st.selectbox(
+        selector_label,
+        options=event_ids,
+        index=0,
+        key="overnight_event_selector",
+        format_func=lambda event_id: format_event_label(event_lookup[event_id]),
+    )
+
+    st.caption("Select one game, then load its odds. This makes one event request.")
+
+    if st.button("Load Overnight Odds", type="primary", key="load_overnight_odds"):
+        display_game(selected_event_id, "")
 
 def build_price_gaps(events: list):
     frames = []
@@ -716,9 +736,7 @@ if price_gaps_tab.open:
 if overnight_tab.open:
     with overnight_tab:
         st.markdown(f"### Tomorrow's Slate — {tomorrow.strftime('%a %m/%d')}")
-        render_slate(
+        render_overnight_slate(
             tomorrow_events,
             f"Tomorrow's NHL Games ({tomorrow.strftime('%m/%d')})",
-            "overnight",
-            "tomorrow’s slate",
         )
