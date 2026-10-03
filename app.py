@@ -35,6 +35,9 @@ PLAYER_NAME_ALIASES = {
     "christopher tanev": "chris tanev",
     "elias pettersson 2004": "elias pettersson",
     "egor chinakhov": "yegor chinakhov",
+    "dmitry simashev": "dmitri simashev",
+    "charles alexis legault": "charles-alexis legault",
+    "alexander wennberg": "alex wennberg",
 }
 
 
