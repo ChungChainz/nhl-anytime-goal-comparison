@@ -23,7 +23,7 @@ TEAM_CODES = {
     "Montréal Canadiens": "MTL", "Nashville Predators": "NSH", "New Jersey Devils": "NJD",
     "New York Islanders": "NYI", "New York Rangers": "NYR", "Ottawa Senators": "OTT",
     "Philadelphia Flyers": "PHI", "Pittsburgh Penguins": "PIT", "San Jose Sharks": "SJS",
-    "Seattle Kraken": "SEA", "St. Louis Blues": "STL", "Tampa Bay Lightning": "TBL",
+    "Seattle Kraken": "SEA", "St Louis Blues": "STL", "Tampa Bay Lightning": "TBL",
     "Toronto Maple Leafs": "TOR", "Utah Mammoth": "UTA", "Utah Hockey Club": "UTA",
     "Vancouver Canucks": "VAN", "Vegas Golden Knights": "VGK",
     "Washington Capitals": "WSH", "Winnipeg Jets": "WPG",
@@ -36,8 +36,9 @@ PLAYER_NAME_ALIASES = {
     "elias pettersson 2004": "elias pettersson",
     "egor chinakhov": "yegor chinakhov",
     "dmitry simashev": "dmitri simashev",
-    "charles alexis legault": "charles-alexis legault",
-    "alexander wennberg": "alex wennberg",
+    "charles-alexis legault": "charles alexis legault",
+    "charlesalexis legault": "charles alexis legault",
+    "alex wennberg": "alexander wennberg",
 }
 
 
@@ -497,8 +498,8 @@ def load_game_odds(event_id: str):
 def display_game(event_id: str, search_text: str) -> bool:
     try:
         home_team, away_team, raw_odds, team_goal_rates = load_game_odds(event_id)
-    except KeyError:
-        st.error("Could not find an NHL team code for this matchup.")
+    except KeyError as error:
+        st.error(f"Could not find an NHL team code for this matchup. Missing key: {error}")
         return False
     except requests.exceptions.RequestException as error:
         st.error(f"Could not load the odds or NHL roster data: {error}")
