@@ -572,7 +572,7 @@ def render_slate(events: list, selector_label: str, key_prefix: str, slate_name:
 
     event_lookup = {event["id"]: event for event in events}
     event_ids = list(event_lookup.keys())
-    event_options = [ALL_GAMES] + event_ids
+    event_options = event_ids
     remembered_key = f"{key_prefix}_selected_event_id"
     remembered_event_id = st.session_state.get(remembered_key)
 
@@ -595,7 +595,7 @@ def render_slate(events: list, selector_label: str, key_prefix: str, slate_name:
         key=search_key,
     ).strip()
     st.session_state[f"{search_key}_value"] = player_search
-    selected_event_ids = event_ids if selected_event_id == ALL_GAMES else [selected_event_id]
+    selected_event_ids = [selected_event_id]
 
     games_displayed = 0
     for event_id in selected_event_ids:
