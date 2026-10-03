@@ -482,10 +482,6 @@ def build_team_summary(raw_odds: pd.DataFrame, team_goal_rates: pd.DataFrame, ho
             team_xg = rate_data.get("Market Implied Goals", float("nan"))
             scorer_xg = book_odds["Scorer Derived xG"].sum() if not book_odds.empty else float("nan")
             row[f"{prefix} Players"] = book_odds["Player"].nunique()
-            row[f"{prefix} TT"] = rate_data.get(
-                "Display Team Total",
-                rate_data.get("Team Total", float("nan")),
-            )
             row[f"{prefix} Team xG"] = team_xg
             row[f"{prefix} Scorer xG"] = scorer_xg
             row[f"{prefix} Gap"] = scorer_xg - team_xg if pd.notna(team_xg) else float("nan")
@@ -613,7 +609,6 @@ def display_game(event_id: str, search_text: str) -> bool:
             .map(sign_color, subset=["DK Gap", "FD Gap", "Team xG Diff (FD - DK)"])
             .format(
                 {
-                    "DK TT": "{:.1f}", "FD TT": "{:.1f}",
                     "DK Team xG": "{:.2f}", "FD Team xG": "{:.2f}",
                     "DK Scorer xG": "{:.2f}", "FD Scorer xG": "{:.2f}",
                     "DK Gap": "{:+.2f}", "FD Gap": "{:+.2f}",
