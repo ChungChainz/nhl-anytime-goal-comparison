@@ -741,7 +741,7 @@ def display_price_gap_table(gaps: pd.DataFrame):
     )
     st.dataframe(styled_gaps, use_container_width=True, hide_index=True)
 
-
+#Game Check for NHL Games
 def render_price_gaps(slates: dict):
     slate_name = st.radio("Slate", options=list(slates.keys()), horizontal=True, key="price_gap_slate")
     events = slates[slate_name]
