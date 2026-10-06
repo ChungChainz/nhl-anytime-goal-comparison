@@ -569,15 +569,25 @@ def load_game_odds(event_id: str):
     return home_team, away_team, raw_odds, team_goal_rates
 
 
-def display_game(event_id: str, search_text: str) -> bool:
-    try:
-        home_team, away_team, raw_odds, team_goal_rates = load_game_odds(event_id)
-    except KeyError as error:
-        st.error(f"Could not find an NHL team code for this matchup. Missing key: {error}")
-        return False
-    except requests.exceptions.RequestException as error:
-        st.error(f"Could not load the odds or NHL roster data: {error}")
-        return False
+def display_game(
+    event_id: str,
+    search_text: str,
+    game_data=None,
+    retrieved_at=None,
+) -> bool:
+    if game_data is None:
+        try:
+            home_team, away_team, raw_odds, team_goal_rates = load_game_odds(event_id)
+        except KeyError as error:
+            st.error(f"Could not find an NHL team code for this matchup. Missing key: {error}")
+            return False
+        except requests.exceptions.RequestException as error:
+            st.error(f"Could not load the odds or NHL roster data: {error}")
+            return False
+
+        retrieved_at = datetime.now(PACIFIC_TIME)
+    else:
+        home_team, away_team, raw_odds, team_goal_rates = game_data
 
     if raw_odds.empty:
         st.warning(f"No DraftKings or FanDuel Anytime Goal Scorer odds were returned for {away_team} @ {home_team}.")
@@ -595,7 +605,8 @@ def display_game(event_id: str, search_text: str) -> bool:
             return False
 
     st.subheader(f"{away_team} @ {home_team}")
-    st.caption(f"Retrieved at {datetime.now(PACIFIC_TIME).strftime('%I:%M:%S %p PT')}")
+    display_time = retrieved_at or datetime.now(PACIFIC_TIME)
+    st.caption(f"Retrieved at {display_time.strftime('%I:%M:%S %p PT')}")
     col1, col2, col3 = st.columns(3)
     col1.metric("Players", matched_odds["Player"].nunique())
     col2.metric("DraftKings Prices", matched_odds.loc[matched_odds["Book Key"] == "draftkings", "Player"].nunique())
@@ -696,10 +707,31 @@ def render_overnight_slate(events: list, selector_label: str):
         format_func=lambda event_id: format_event_label(event_lookup[event_id]),
     )
 
-    st.caption("Select one game, then load its odds. This makes one event request.")
-
     if st.button("Load Overnight Odds", type="primary", key="load_overnight_odds"):
-        display_game(selected_event_id, "")
+        try:
+            st.session_state["overnight_loaded_game_data"] = load_game_odds(
+                selected_event_id
+            )
+            st.session_state["overnight_loaded_event_id"] = selected_event_id
+            st.session_state["overnight_loaded_at"] = datetime.now(PACIFIC_TIME)
+        except KeyError as error:
+            st.error(
+                f"Could not find an NHL team code for this matchup. Missing key: {error}"
+            )
+        except requests.exceptions.RequestException as error:
+            st.error(f"Could not load the odds or NHL roster data: {error}")
+
+    loaded_game_data = st.session_state.get("overnight_loaded_game_data")
+    loaded_event_id = st.session_state.get("overnight_loaded_event_id")
+    loaded_at = st.session_state.get("overnight_loaded_at")
+
+    if loaded_game_data is not None and loaded_event_id is not None:
+        display_game(
+            loaded_event_id,
+            "",
+            game_data=loaded_game_data,
+            retrieved_at=loaded_at,
+        )
 
 def build_price_gaps(events: list):
     frames = []
