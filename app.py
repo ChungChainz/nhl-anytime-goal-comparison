@@ -27,7 +27,7 @@ TEAM_CODES = {
     "Montréal Canadiens": "MTL", "Nashville Predators": "NSH", "New Jersey Devils": "NJD",
     "New York Islanders": "NYI", "New York Rangers": "NYR", "Ottawa Senators": "OTT",
     "Philadelphia Flyers": "PHI", "Pittsburgh Penguins": "PIT", "San Jose Sharks": "SJS",
-    "Seattle Kraken": "SEA", "St Louis Blues": "STL", "Tampa Bay Lightning": "TBL",
+    "Seattle Kraken": "SEA", "St Louis Blues": "STL", "St. Louis Blues": "STL", "Tampa Bay Lightning": "TBL",
     "Toronto Maple Leafs": "TOR", "Utah Mammoth": "UTA", "Utah Hockey Club": "UTA",
     "Vancouver Canucks": "VAN", "Vegas Golden Knights": "VGK",
     "Washington Capitals": "WSH", "Winnipeg Jets": "WPG",
@@ -44,8 +44,35 @@ PLAYER_NAME_ALIASES = {
     "charlesalexis legault": "charles alexis legault",
     "alex wennberg": "alexander wennberg",
     "nicholas robertson": "nick robertson",
+    "stanley hoyt": "hoyt stanley",
+    "tim stuetzle": "tim stutzle",
+    "yurov danila": "danila yurov",
+    "maxim v shabanov": "maxim shabanov",
+    "severson damon": "damon severson",
+    "boko imama": "bokondji imama",
+    "grundstrom carl": "carl grundstrom",
+    "carl grundström": "carl grundstrom",
+    "gabriel perreault": "gabe perreault",
+    "toninato dominic": "dominic toninato",
+    "alexander kerfoot": "alex kerfoot",
+    "vitali pinchuk": "vitaly pinchuk",
+    "nick paul": "nicholas paul",
 }
-
+PLAYER_TEAM_OVERRIDES = {
+    "hoyt stanley": "Ottawa Senators",
+    "severson damon": "Columbus Blue Jackets",
+    "damon severson": "Columbus Blue Jackets",
+    "boko imama": "Florida Panthers",
+    "carl grundstrom": "Philadelphia Flyers",
+    "grundstrom carl": "Philadelphia Flyers",
+    "dominic toninato": "Chicago Blackhawks",
+    "alex kerfoot": "Nashville Predators",
+    "alexander kerfoot": "Nashville Predators",
+    "vitaly pinchuk": "Nashville Predators",
+    "vitali pinchuk": "Nashville Predators",
+    "nicholas paul": "Toronto Maple Leafs",
+    "jared wright": "Los Angeles Kings",
+}
 
 def american_to_implied_probability(odds: int) -> float:
     if odds > 0:
@@ -92,6 +119,25 @@ def sign_color(value):
         return "color: #ff4b4b; font-weight: 700;"
     return ""
 
+def sportsbook_header_color(headers):
+    colors = {
+        "DK Odds": "color: #7CFC00; font-weight: 500;",
+        "DK Implied %": "color: #7CFC00; font-weight: 500;",
+        "DK xG": "color: #7CFC00; font-weight: 500;",
+
+        "FD Odds": "color: #60A5FA; font-weight: 500;",
+        "FD Difference": "color: #60A5FA; font-weight: 500;",
+        "FD Implied %": "color: #60A5FA; font-weight: 500;",
+        "FD xG": "color: #60A5FA; font-weight: 500;",
+        "FD xG Diff": "color: #60A5FA; font-weight: 500;",
+
+        "Bet365 Odds": "color: #22C55E; font-weight: 500;",
+        "Bet365 Difference": "color: #22C55E; font-weight: 500;",
+        "Bet365 Implied %": "color: #22C55E; font-weight: 500;",
+        "Bet365 xG": "color: #22C55E; font-weight: 500;",
+        "Bet365 xG Diff": "color: #22C55E; font-weight: 500;",
+    }
+    return [colors.get(header, "") for header in headers]
 
 @st.cache_data(ttl=60, show_spinner=False)
 def get_nhl_events(api_key: str):
@@ -147,6 +193,20 @@ def find_opticodds_fixture(value):
                 return fixture
     return None
 
+@st.cache_data(ttl=60, show_spinner=False)
+def get_active_bet365_markets(api_key: str, event_id: str):
+    response = requests.get(
+        f"{OPTICODDS_API_BASE_URL}/markets/active",
+        headers={"X-Api-Key": api_key},
+        params={
+            "fixture_id": event_id,
+            "sportsbook": "bet365",
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    return response.json()
+
 
 @st.cache_data(ttl=60, show_spinner=False)
 def get_anytime_goal_odds(api_key: str, event_id: str):
@@ -157,6 +217,9 @@ def get_anytime_goal_odds(api_key: str, event_id: str):
         ("sportsbook", "bet365"),
         ("market", "Anytime Goal Scorer"),
         ("market", "Team Total"),
+        ("market", "Total Goals"),
+        ("market", "puck_line"),
+        ("market", "moneyline"),
         ("odds_format", "AMERICAN"),
     ]
     response = requests.get(
@@ -238,7 +301,10 @@ def normalize_odds(odds_payload: dict, player_team_map: dict) -> pd.DataFrame:
             rows.append(
                 {
                     "Player": player_name,
-                    "Team": player_team_map.get(normalize_name(raw_player_name), "Unmatched"),
+                    "Team": PLAYER_TEAM_OVERRIDES.get(
+                    normalize_name(raw_player_name),
+                    player_team_map.get(normalize_name(raw_player_name), "Unmatched"),
+                    ),
                     "Book Key": book_key,
                     "American Odds": odds,
                     "Implied Probability": american_to_implied_probability(odds),
@@ -447,6 +513,283 @@ def build_team_total_implied_goals(team_totals: pd.DataFrame) -> pd.DataFrame:
     )
     return rates[columns]
 
+def poisson_goal_distribution(goal_rate: float, max_goals: int = 20) -> list[float]:
+    return [
+        math.exp(-goal_rate) * (goal_rate ** goals) / math.factorial(goals)
+        for goals in range(max_goals + 1)
+    ]
+
+
+def solve_home_goal_rate(
+    total_goal_rate: float,
+    target_probability: float,
+    probability_function,
+) -> float:
+    """Find the home-team goal rate that matches a market probability."""
+    low = 0.01
+    high = max(total_goal_rate - 0.01, 0.02)
+
+    for _ in range(80):
+        home_rate = (low + high) / 2
+        probability = probability_function(home_rate)
+
+        if probability < target_probability:
+            low = home_rate
+        else:
+            high = home_rate
+
+    return (low + high) / 2
+
+
+def home_moneyline_probability(total_goal_rate: float, home_goal_rate: float) -> float:
+    """Poisson estimate of home win probability; ties are split evenly."""
+    away_goal_rate = max(total_goal_rate - home_goal_rate, 0.01)
+    home_probabilities = poisson_goal_distribution(home_goal_rate)
+    away_probabilities = poisson_goal_distribution(away_goal_rate)
+
+    probability = 0.0
+    for home_goals, home_probability in enumerate(home_probabilities):
+        for away_goals, away_probability in enumerate(away_probabilities):
+            if home_goals > away_goals:
+                probability += home_probability * away_probability
+            elif home_goals == away_goals:
+                probability += 0.5 * home_probability * away_probability
+
+    return probability
+
+
+def home_puck_line_cover_probability(
+    total_goal_rate: float,
+    home_goal_rate: float,
+    home_puck_line: float,
+) -> float:
+    """Poisson estimate of the home team covering its puck line."""
+    away_goal_rate = max(total_goal_rate - home_goal_rate, 0.01)
+    home_probabilities = poisson_goal_distribution(home_goal_rate)
+    away_probabilities = poisson_goal_distribution(away_goal_rate)
+
+    probability = 0.0
+    for home_goals, home_probability in enumerate(home_probabilities):
+        for away_goals, away_probability in enumerate(away_probabilities):
+            if home_goals + home_puck_line > away_goals:
+                probability += home_probability * away_probability
+
+    return probability
+
+
+def no_vig_probability(first_price: int, second_price: int) -> float:
+    first_probability = american_to_implied_probability(first_price) / 100
+    second_probability = american_to_implied_probability(second_price) / 100
+    return first_probability / (first_probability + second_probability)
+
+
+def build_bet365_derived_team_rates(
+    odds_payload: dict,
+    home_team: str,
+    away_team: str,
+) -> pd.DataFrame:
+    """
+    Creates Bet365 Team xG from:
+    1. Total Goals for game-goal environment
+    2. Moneyline for team strength
+    3. Puck Line as a secondary team-split signal
+    """
+    columns = [
+        "Team",
+        "Book Key",
+        "Team Total",
+        "Fair Over %",
+        "Market Implied Goals",
+    ]
+
+    bet365_odds = [
+        odd
+        for odd in odds_payload.get("odds", [])
+        if str(odd.get("sportsbook", "")).lower() == "bet365"
+    ]
+
+    # Use balanced half-goal total lines to infer the expected game total.
+    total_rows = [
+        odd
+        for odd in bet365_odds
+        if str(odd.get("market_id", "")).lower() == "total_goals"
+        and odd.get("price") is not None
+        and odd.get("points") is not None
+    ]
+
+    total_candidates = []
+
+    for line in sorted({float(odd["points"]) for odd in total_rows}):
+        # Integer totals can push. Use 5.5 / 6.5-style lines instead.
+        if abs(line - round(line)) < 0.001:
+            continue
+
+        line_rows = [
+            odd for odd in total_rows if float(odd["points"]) == line
+        ]
+
+        over = next(
+            (
+                odd for odd in line_rows
+                if str(odd.get("selection_line", "")).lower() == "over"
+            ),
+            None,
+        )
+        under = next(
+            (
+                odd for odd in line_rows
+                if str(odd.get("selection_line", "")).lower() == "under"
+            ),
+            None,
+        )
+
+        if over is None or under is None:
+            continue
+
+        fair_over_probability = no_vig_probability(
+            over["price"],
+            under["price"],
+        )
+
+        implied_total_goals = implied_goals_from_team_total(
+            line,
+            fair_over_probability,
+        )
+
+        if pd.notna(implied_total_goals):
+            total_candidates.append(
+                {
+                    "goal_rate": implied_total_goals,
+                    "fair_over_probability": fair_over_probability,
+                }
+            )
+
+    if not total_candidates:
+        return pd.DataFrame(columns=columns)
+
+    # Select the offered half-goal total closest to a 50/50 market.
+    total_choice = min(
+        total_candidates,
+        key=lambda item: abs(item["fair_over_probability"] - 0.5),
+    )
+    total_goal_rate = total_choice["goal_rate"]
+
+    main_moneyline_rows = [
+        odd
+        for odd in bet365_odds
+        if str(odd.get("market_id", "")).lower() == "moneyline"
+        and odd.get("is_main") is True
+        and odd.get("price") is not None
+    ]
+
+    home_moneyline = next(
+        (
+            odd for odd in main_moneyline_rows
+            if normalize_name(odd.get("selection", "")) == normalize_name(home_team)
+        ),
+        None,
+    )
+    away_moneyline = next(
+        (
+            odd for odd in main_moneyline_rows
+            if normalize_name(odd.get("selection", "")) == normalize_name(away_team)
+        ),
+        None,
+    )
+
+    home_rate_from_moneyline = None
+    if home_moneyline is not None and away_moneyline is not None:
+        fair_home_win_probability = no_vig_probability(
+            home_moneyline["price"],
+            away_moneyline["price"],
+        )
+        home_rate_from_moneyline = solve_home_goal_rate(
+            total_goal_rate,
+            fair_home_win_probability,
+            lambda home_rate: home_moneyline_probability(
+                total_goal_rate,
+                home_rate,
+            ),
+        )
+
+    main_puck_rows = [
+        odd
+        for odd in bet365_odds
+        if str(odd.get("market_id", "")).lower() == "puck_line"
+        and odd.get("is_main") is True
+        and odd.get("price") is not None
+        and odd.get("points") is not None
+    ]
+
+    home_puck_line = next(
+        (
+            odd for odd in main_puck_rows
+            if normalize_name(odd.get("selection", "")) == normalize_name(home_team)
+        ),
+        None,
+    )
+    away_puck_line = next(
+        (
+            odd for odd in main_puck_rows
+            if normalize_name(odd.get("selection", "")) == normalize_name(away_team)
+        ),
+        None,
+    )
+
+    home_rate_from_puck_line = None
+    if home_puck_line is not None and away_puck_line is not None:
+        fair_home_cover_probability = no_vig_probability(
+            home_puck_line["price"],
+            away_puck_line["price"],
+        )
+        home_rate_from_puck_line = solve_home_goal_rate(
+            total_goal_rate,
+            fair_home_cover_probability,
+            lambda home_rate: home_puck_line_cover_probability(
+                total_goal_rate,
+                home_rate,
+                float(home_puck_line["points"]),
+            ),
+        )
+
+    # Moneyline is the primary split; puck line provides a secondary check.
+    if home_rate_from_moneyline is not None and home_rate_from_puck_line is not None:
+        home_goal_rate = (
+            0.60 * home_rate_from_moneyline
+            + 0.40 * home_rate_from_puck_line
+        )
+    elif home_rate_from_moneyline is not None:
+        home_goal_rate = home_rate_from_moneyline
+    elif home_rate_from_puck_line is not None:
+        home_goal_rate = home_rate_from_puck_line
+    else:
+        return pd.DataFrame(columns=columns)
+
+    home_goal_rate = min(
+        max(home_goal_rate, 0.01),
+        total_goal_rate - 0.01,
+    )
+    away_goal_rate = total_goal_rate - home_goal_rate
+
+    return pd.DataFrame(
+        [
+            {
+                "Team": home_team,
+                "Book Key": "bet365",
+                "Team Total": home_goal_rate,
+                "Fair Over %": float("nan"),
+                "Market Implied Goals": home_goal_rate,
+            },
+            {
+                "Team": away_team,
+                "Book Key": "bet365",
+                "Team Total": away_goal_rate,
+                "Fair Over %": float("nan"),
+                "Market Implied Goals": away_goal_rate,
+            },
+        ]
+    )
+
 def add_player_implied_goals(raw_odds: pd.DataFrame, team_goal_rates: pd.DataFrame) -> pd.DataFrame:
     odds = raw_odds.copy()
     probabilities = (odds["Implied Probability"] / 100).clip(upper=0.999999)
@@ -506,12 +849,12 @@ def build_player_comparison(raw_odds: pd.DataFrame) -> pd.DataFrame:
         }
     ).reset_index(drop=True)
     comparison["FD Difference"] = comparison["FD Implied %"] - comparison["DK Implied %"]
-    comparison["xG Diff (FD - DK)"] = comparison["FD xG"] - comparison["DK xG"]
+    comparison["FD xG Diff"] = comparison["FD xG"] - comparison["DK xG"]
     comparison["Bet365 Difference"] = (
             comparison["Bet365 Implied %"] - comparison["DK Implied %"]
     )
 
-    comparison["xG Diff (Bet365 - DK)"] = (
+    comparison["Bet365 xG Diff"] = (
             comparison["Bet365 xG"] - comparison["DK xG"]
     )
 
@@ -549,8 +892,8 @@ def build_player_comparison(raw_odds: pd.DataFrame) -> pd.DataFrame:
             "DK xG",
             "FD xG",
             "Bet365 xG",
-            "xG Diff (FD - DK)",
-            "xG Diff (Bet365 - DK)",
+            "FD xG Diff",
+            "Bet365 xG Diff",
             "Best Price",
         ]
     ]
@@ -586,11 +929,12 @@ def display_player_section(team_name: str, side: str, team_odds: pd.DataFrame):
     comparison = build_player_comparison(team_odds)
     styled_comparison = (
         comparison.style
+        .apply_index(sportsbook_header_color, axis=1)
         .map(sign_color, subset=[
             "FD Difference",
             "Bet365 Difference",
-            "xG Diff (FD - DK)",
-            "xG Diff (Bet365 - DK)",
+            "FD xG Diff",
+            "Bet365 xG Diff",
         ])
 
         .format(
@@ -603,13 +947,20 @@ def display_player_section(team_name: str, side: str, team_odds: pd.DataFrame):
                 "DK xG": "{:.3f}",
                 "FD xG": "{:.3f}",
                 "Bet365 xG": "{:.3f}",
-                "xG Diff (FD - DK)": "{:+.3f}",
-                "xG Diff (Bet365 - DK)": "{:+.3f}",
+                "FD xG Diff": "{:+.3f}",
+                "Bet 365 xG Diff": "{:+.3f}",
             }
         )
     )
 
-    st.dataframe(styled_comparison, use_container_width=True, hide_index=True)
+    st.markdown(
+        f"""
+        <div style="overflow-x: auto;">
+            {styled_comparison.to_html()}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 st.set_page_config(page_title="NHL Anytime Goal Comparison", layout="wide")
@@ -674,6 +1025,19 @@ def load_game_odds(event_id: str):
 
     team_totals = extract_team_totals(odds_payload, home_team, away_team)
     team_goal_rates = build_team_total_implied_goals(team_totals)
+
+    bet365_team_rates = build_bet365_derived_team_rates(
+        odds_payload,
+        home_team,
+        away_team,
+    )
+
+    if not bet365_team_rates.empty:
+        team_goal_rates = pd.concat(
+            [team_goal_rates, bet365_team_rates],
+            ignore_index=True,
+        )
+
     raw_odds = add_player_implied_goals(raw_odds, team_goal_rates)
     return home_team, away_team, raw_odds, team_goal_rates
 
