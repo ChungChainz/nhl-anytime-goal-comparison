@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import math
 import unicodedata
+import time
 
 import pandas as pd
 import requests
@@ -57,6 +58,7 @@ PLAYER_NAME_ALIASES = {
     "alexander kerfoot": "alex kerfoot",
     "vitali pinchuk": "vitaly pinchuk",
     "nick paul": "nicholas paul",
+    "josh samanski": "joshua samanski",
 }
 PLAYER_TEAM_OVERRIDES = {
     "hoyt stanley": "Ottawa Senators",
@@ -72,6 +74,8 @@ PLAYER_TEAM_OVERRIDES = {
     "vitali pinchuk": "Nashville Predators",
     "nicholas paul": "Toronto Maple Leafs",
     "jared wright": "Los Angeles Kings",
+    "jorian donovan": "Ottawa Senators",
+    "joshua samanski": "Edmonton Oilers",
 }
 
 def american_to_implied_probability(odds: int) -> float:
@@ -242,18 +246,37 @@ def get_anytime_goal_odds(api_key: str, event_id: str):
     }, response.headers
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=21600, show_spinner=False)
 def get_team_roster(team_code: str):
-    response = requests.get(f"{NHL_API_BASE_URL}/roster/{team_code}/current", timeout=20)
-    response.raise_for_status()
+    url = f"{NHL_API_BASE_URL}/roster/{team_code}/current"
+
+    for attempt in range(4):
+        response = requests.get(url, timeout=20)
+
+        if response.status_code != 429:
+            response.raise_for_status()
+            break
+
+        if attempt == 3:
+            response.raise_for_status()
+
+        try:
+            wait_seconds = float(response.headers.get("Retry-After", 2 ** (attempt + 1)))
+        except ValueError:
+            wait_seconds = 2 ** (attempt + 1)
+
+        time.sleep(min(wait_seconds, 20))
+
     players = []
     for group in ["forwards", "defensemen", "goalies"]:
         for player in response.json().get(group, []):
             first_name = player.get("firstName", {}).get("default", "")
             last_name = player.get("lastName", {}).get("default", "")
             full_name = f"{first_name} {last_name}".strip()
+
             if full_name:
                 players.append(normalize_name(full_name))
+
     return players
 
 
