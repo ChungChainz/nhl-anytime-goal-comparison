@@ -76,6 +76,7 @@ PLAYER_TEAM_OVERRIDES = {
     "jared wright": "Los Angeles Kings",
     "jorian donovan": "Ottawa Senators",
     "joshua samanski": "Edmonton Oilers",
+    "roger mcqueen": "Anaheim Ducks",
 }
 
 def american_to_implied_probability(odds: int) -> float:
