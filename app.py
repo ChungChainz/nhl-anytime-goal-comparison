@@ -59,6 +59,8 @@ PLAYER_NAME_ALIASES = {
     "vitali pinchuk": "vitaly pinchuk",
     "nick paul": "nicholas paul",
     "josh samanski": "joshua samanski",
+    "jonathan brodzinski": "jonny brodzinski",
+    "jaroslav chmelař": "jaroslav chmelar",
 }
 PLAYER_TEAM_OVERRIDES = {
     "hoyt stanley": "Ottawa Senators",
@@ -77,6 +79,8 @@ PLAYER_TEAM_OVERRIDES = {
     "jorian donovan": "Ottawa Senators",
     "joshua samanski": "Edmonton Oilers",
     "roger mcqueen": "Anaheim Ducks",
+    "jonny brodzinski": "Washington Capitals",
+    "jaroslav chmelar": "New York Rangers",
 }
 
 def american_to_implied_probability(odds: int) -> float:
