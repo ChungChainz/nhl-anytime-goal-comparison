@@ -81,6 +81,7 @@ PLAYER_TEAM_OVERRIDES = {
     "roger mcqueen": "Anaheim Ducks",
     "jonny brodzinski": "Washington Capitals",
     "jaroslav chmelar": "New York Rangers",
+    "taylor makar": "Colorado Avalanche",
 }
 
 def american_to_implied_probability(odds: int) -> float:
