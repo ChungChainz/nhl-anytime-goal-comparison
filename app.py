@@ -64,6 +64,7 @@ PLAYER_NAME_ALIASES = {
     "artyom duda": "artem duda",
     "elias nils pettersson": "elias pettersson",
     "elias pettersson c": "elias pettersson",
+    "sammy blais": "sam blais",
 }
 PLAYER_TEAM_OVERRIDES = {
     "hoyt stanley": "Ottawa Senators",
@@ -90,6 +91,9 @@ PLAYER_TEAM_OVERRIDES = {
     "dylan hryckowian": "Dallas Stars",
     "martin chromiak": "Los Angeles Kings",
     "elias pettersson": "Vancouver Canucks",
+    "filip bystedt": "San Jose Sharks",
+    "philip tomasino": "Ottawa Senators",
+    "sam blais": "Ottawa Senators",
 }
 
 def american_to_implied_probability(odds: int) -> float:
