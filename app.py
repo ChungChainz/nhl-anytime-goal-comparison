@@ -61,7 +61,9 @@ PLAYER_NAME_ALIASES = {
     "josh samanski": "joshua samanski",
     "jonathan brodzinski": "jonny brodzinski",
     "jaroslav chmelař": "jaroslav chmelar",
-    "artyom duda": "artem duda"
+    "artyom duda": "artem duda",
+    "elias nils pettersson": "elias pettersson",
+    "elias pettersson c": "elias pettersson",
 }
 PLAYER_TEAM_OVERRIDES = {
     "hoyt stanley": "Ottawa Senators",
@@ -86,8 +88,8 @@ PLAYER_TEAM_OVERRIDES = {
     "artem duda": "Utah Mammoth",
     "trey taylor": "Dallas Stars",
     "dylan hryckowian": "Dallas Stars",
-    "martin chromiak": "Los Angeles Kings"
-
+    "martin chromiak": "Los Angeles Kings",
+    "elias pettersson": "Vancouver Canucks",
 }
 
 def american_to_implied_probability(odds: int) -> float:
