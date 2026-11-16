@@ -94,6 +94,8 @@ PLAYER_TEAM_OVERRIDES = {
     "filip bystedt": "San Jose Sharks",
     "philip tomasino": "Ottawa Senators",
     "sam blais": "Ottawa Senators",
+    "zac jones": "Vancouver Canucks",
+    "ben mccartney": "Vancouver Canucks"
 }
 
 def american_to_implied_probability(odds: int) -> float:
