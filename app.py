@@ -1281,6 +1281,14 @@ def render_overnight_slate(events: list, selector_label: str):
             retrieved_at=loaded_at,
         )
 
+BOOK_ONLY_COLUMNS = [
+    "Player",
+    "Team",
+    "Game",
+    "FD Odds",
+    "FD Implied %",
+]
+
 def build_price_gaps(events: list):
     frames = []
     failed_games = []
@@ -1305,6 +1313,136 @@ def build_price_gaps(events: list):
     # Only players priced at both books can have a DK-vs-FD gap.
     gaps = pd.concat(frames, ignore_index=True)
     return gaps, failed_games
+
+def build_book_only_players(events: list, book_key: str):
+    frames = []
+    failed_games = []
+
+    other_book_key = "draftkings" if book_key == "fanduel" else "fanduel"
+    book_prefix = "FD" if book_key == "fanduel" else "DK"
+
+    display_columns = [
+        "Player",
+        "Team",
+        "Game",
+        f"{book_prefix} Odds",
+        f"{book_prefix} Implied %",
+    ]
+
+    for event in events:
+        try:
+            home_team, away_team, raw_odds, _ = load_game_odds(event["id"])
+        except (KeyError, requests.exceptions.RequestException):
+            failed_games.append(f"{event['away_team']} @ {event['home_team']}")
+            continue
+
+        if raw_odds.empty:
+            continue
+
+        book_odds = raw_odds.loc[
+            raw_odds["Book Key"] == book_key
+        ].copy()
+
+        other_book_match_keys = set(
+            raw_odds.loc[
+                raw_odds["Book Key"] == other_book_key,
+                "Player",
+            ].map(normalize_name)
+        )
+
+        book_only = book_odds.loc[
+            ~book_odds["Player"].map(normalize_name).isin(other_book_match_keys)
+        ].copy()
+
+        if book_only.empty:
+            continue
+
+        book_only["Team"] = book_only["Team"].map(
+            lambda team: TEAM_CODES.get(team, team)
+        )
+        book_only["Game"] = (
+            f"{TEAM_CODES.get(away_team, away_team)} @ "
+            f"{TEAM_CODES.get(home_team, home_team)}"
+        )
+
+        book_only = book_only.rename(
+            columns={
+                "American Odds": f"{book_prefix} Odds",
+                "Implied Probability": f"{book_prefix} Implied %",
+            }
+        )
+
+        frames.append(book_only[display_columns])
+
+    if not frames:
+        return pd.DataFrame(columns=display_columns), failed_games, display_columns
+
+    results = pd.concat(frames, ignore_index=True)
+    results = results.drop_duplicates(subset=["Player", "Game"])
+
+    return (
+        results.sort_values(
+            ["Game", f"{book_prefix} Implied %"],
+            ascending=[True, False],
+        ),
+        failed_games,
+        display_columns,
+    )
+
+
+def render_book_only_players(slates: dict):
+    slate_name = st.radio(
+        "Slate",
+        options=list(slates.keys()),
+        horizontal=True,
+        key="book_only_slate",
+    )
+
+    player_selection = st.radio(
+        "Player availability",
+        options=["FD Only Players", "DK Only Players"],
+        horizontal=True,
+        key="book_only_player_selection",
+    )
+
+    book_key = "fanduel" if player_selection == "FD Only Players" else "draftkings"
+    book_prefix = "FD" if book_key == "fanduel" else "DK"
+
+    book_only, failed_games, display_columns = build_book_only_players(
+        slates[slate_name],
+        book_key,
+    )
+
+    if failed_games:
+        st.warning(f"Could not load odds for: {', '.join(failed_games)}")
+
+    if book_only.empty:
+        st.info(
+            f"{player_selection} are not currently available on the "
+            f"{slate_name.lower()} slate."
+        )
+        return
+
+    st.caption(
+        f"{len(book_only)} {player_selection.lower()} • "
+        f"Retrieved at {datetime.now(PACIFIC_TIME).strftime('%I:%M:%S %p PT')}"
+    )
+
+    styled_book_only = (
+        book_only.style
+        .format(
+            {
+                f"{book_prefix} Odds": format_american_odds,
+                f"{book_prefix} Implied %": "{:.2f}%",
+            }
+        )
+    )
+
+    st.dataframe(
+        styled_book_only,
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def display_price_gap_table(gaps: pd.DataFrame, comparison: dict):
@@ -1398,8 +1536,8 @@ today_events = [event for event in all_events if event_is_on_date(event, today) 
 tomorrow_events = [event for event in all_events if event_is_on_date(event, tomorrow)]
 
 # on_change="rerun" makes tabs lazy, so only the open tab spends Odds API requests.
-today_tab, price_gaps_tab, overnight_tab = st.tabs(
-    ["Today", "Price Gaps", "Overnight"],
+today_tab, price_gaps_tab, book_only_tab, overnight_tab = st.tabs(
+    ["Today", "Price Gaps", "Book Only Players", "Overnight"],
     key="main_tabs",
     on_change="rerun",
 )
@@ -1411,6 +1549,15 @@ if today_tab.open:
 if price_gaps_tab.open:
     with price_gaps_tab:
         render_price_gaps({"Today": today_events, "Tomorrow": tomorrow_events})
+
+if book_only_tab.open:
+    with book_only_tab:
+        render_book_only_players(
+            {
+                "Today": today_events,
+                "Tomorrow": tomorrow_events,
+            }
+        )
 
 if overnight_tab.open:
     with overnight_tab:
