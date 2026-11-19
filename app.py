@@ -143,6 +143,11 @@ def sign_color(value):
         return "color: #ff4b4b; font-weight: 700;"
     return ""
 
+def replacement_highlight(value):
+    if pd.notna(value) and value != "—":
+        return "background-color: #FFF3CD; color: #92400E; font-weight: 700;"
+    return ""
+
 def sportsbook_header_color(headers):
     colors = {
         "DK Odds": "color: #7CFC00; font-weight: 500;",
@@ -1320,6 +1325,8 @@ def build_book_only_players(events: list, book_key: str):
 
     other_book_key = "draftkings" if book_key == "fanduel" else "fanduel"
     book_prefix = "FD" if book_key == "fanduel" else "DK"
+    other_book_prefix = "DK" if book_key == "fanduel" else "FD"
+    replacement_column = f"Possible {other_book_prefix} replacement"
 
     display_columns = [
         "Player",
@@ -1327,6 +1334,7 @@ def build_book_only_players(events: list, book_key: str):
         "Game",
         f"{book_prefix} Odds",
         f"{book_prefix} Implied %",
+        replacement_column,
     ]
 
     for event in events:
@@ -1341,21 +1349,37 @@ def build_book_only_players(events: list, book_key: str):
 
         book_odds = raw_odds.loc[
             raw_odds["Book Key"] == book_key
-        ].copy()
+            ].copy()
 
-        other_book_match_keys = set(
-            raw_odds.loc[
-                raw_odds["Book Key"] == other_book_key,
-                "Player",
-            ].map(normalize_name)
-        )
+        other_book_odds = raw_odds.loc[
+            raw_odds["Book Key"] == other_book_key
+            ].copy()
+
+        book_match_keys = set(book_odds["Player"].map(normalize_name))
+        other_book_match_keys = set(other_book_odds["Player"].map(normalize_name))
 
         book_only = book_odds.loc[
             ~book_odds["Player"].map(normalize_name).isin(other_book_match_keys)
         ].copy()
 
+        other_book_only = other_book_odds.loc[
+            ~other_book_odds["Player"].map(normalize_name).isin(book_match_keys)
+        ].copy()
+
         if book_only.empty:
             continue
+
+        possible_replacements = (
+            other_book_only.groupby("Team")["Player"]
+            .agg(lambda players: ", ".join(sorted(players.unique())))
+            .to_dict()
+        )
+
+        book_only[replacement_column] = (
+            book_only["Team"]
+            .map(possible_replacements)
+            .fillna("—")
+        )
 
         book_only["Team"] = book_only["Team"].map(
             lambda team: TEAM_CODES.get(team, team)
@@ -1407,6 +1431,8 @@ def render_book_only_players(slates: dict):
 
     book_key = "fanduel" if player_selection == "FD Only Players" else "draftkings"
     book_prefix = "FD" if book_key == "fanduel" else "DK"
+    other_book_prefix = "DK" if book_key == "fanduel" else "FD"
+    replacement_column = f"Possible {other_book_prefix} replacement"
 
     book_only, failed_games, display_columns = build_book_only_players(
         slates[slate_name],
@@ -1430,6 +1456,7 @@ def render_book_only_players(slates: dict):
 
     styled_book_only = (
         book_only.style
+        .map(replacement_highlight, subset=[replacement_column])
         .format(
             {
                 f"{book_prefix} Odds": format_american_odds,
@@ -1537,7 +1564,7 @@ tomorrow_events = [event for event in all_events if event_is_on_date(event, tomo
 
 # on_change="rerun" makes tabs lazy, so only the open tab spends Odds API requests.
 today_tab, price_gaps_tab, book_only_tab, overnight_tab = st.tabs(
-    ["Today", "Price Gaps", "Book Only Players", "Overnight"],
+    ["Today", "Price Gaps", "Missing Players", "Overnight"],
     key="main_tabs",
     on_change="rerun",
 )
